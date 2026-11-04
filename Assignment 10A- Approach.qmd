@@ -1,0 +1,24 @@
+---
+title: "Assignment 10A: Sentiment Analysis Approach"
+author: "Lakeranie Boodram"
+format: html
+editor: visual
+---
+
+For this assignment, I will reproduce and extend the sentiment analysis example from Chapter 2 of Text Mining with R by Julia Silge and David Robinson. I will create a Quarto document using R and include citations for the book and the original example code.
+
+First, I will reproduce the analysis using Jane Austen’s novels. I will organize the text into a tidy format with one word per row, match words to sentiment lexicons, and visualize how sentiment changes throughout the novels. I will also reproduce the comparison of the Bing, AFINN, and NRC lexicons to examine how dictionary choice affects the results.
+
+For the first extension, I will analyze A Christmas Carol by Charles Dickens, using the text available through Project Gutenberg. I will import the text from an online source, remove the Gutenberg header and footer, and organize the words into sections for analysis.
+
+For the second extension, I will add the Syuzhet sentiment dictionary from the syuzhet R package. I will apply both Bing and Syuzhet to the same sections of the Dickens text and compare their sentiment patterns, word coverage, and the words contributing to the scores. Because the dictionaries use different scoring systems, I will avoid treating their raw scores as directly equivalent.
+
+Finally, I will explain how the results differ from the original Jane Austen analysis. I will discuss differences in vocabulary and sentiment patterns, along with limitations such as words having different meanings depending on context. I will upload the completed .qmd file to GitHub and publish the rendered report on RPubs.
+
+## References
+
+Silge, J., & Robinson, D. (2017). Text mining with R: A tidy approach. O’Reilly Media. Chapter 2: <https://www.tidytextmining.com/sentiment>
+
+Dickens, C. (1843). A Christmas Carol. Project Gutenberg. <https://www.gutenberg.org/ebooks/46>
+
+Syuzhet package documentation: Sentiment dictionaries. <https://search.r-project.org/CRAN/refmans/syuzhet/html/get_sentiment_dictionary.html>
