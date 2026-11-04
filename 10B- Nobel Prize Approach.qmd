@@ -1,0 +1,26 @@
+---
+title: "Assignment 10B: Nobel Prize Approach"
+author: "Lakeranie Boodram"
+format: html
+editor: visual
+---
+For this assignment, I plan to use JSON data from the Nobel Prize API to explore patterns among Nobel Prize recipients. I will retrieve the data directly from the API in R and transform it into tidy data frames for analysis.
+
+## My analysis will focus on four questions:
+1. Which ten birth countries have the most Nobel Prize laureates? I will group recipients by birth country and count each person once using their unique laureate ID.
+
+2. What is the ratio of male to female Nobel Prize winners in different categories? I will calculate the numbers of male and female winners in various categories of Nobel Prize excluding the prizes announced for institutions of people.
+
+3. Which people have been awarded the Nobel Prize more than once, and in which categories? I will track repeat winners through their unique IDs.
+
+4. How does the average approximate age of Nobel Prize recipients differ across categories before 2000 versus 2000 onward? I will subtract each recipient’s birth year from their award year, divide the awards into these two periods, and compare the average ages within each category.
+
+I am going to use the jsonlite package to read in the JSON data, tidyr to expand the nested records, and dplyr for filtering, grouping and summarizing the data. I will pay attention to API pagination in order to get all records. My main data frame will have one row per recipient per award. I will use unique IDs to avoid double counting when counting individual recipients. Records with missing birth information will only be excluded from analyses that need that information.
+
+
+For each question, I will include the R code, a table or plot, and a brief explanation of the findings. The final submission will be a single Quarto (.qmd) file containing all four questions, the data retrieval and cleaning steps, and the resulting answers.
+
+
+## Reference 
+
+Nobel Prize Outreach. (n.d.). Nobel Prize Developer Zone. <https://www.nobelprize.org/about/developer-zone-2/> 
