@@ -1,0 +1,307 @@
+---
+title: "Assignment 10B: Nobel Prize Analysis"
+author: "Lakeranie Boodram"
+format:
+  html:
+    toc: true
+    embed-resources: true
+editor: visual
+execute:
+  echo: true
+  message: false
+---
+
+## Introduction
+
+This analysis uses JSON data retrieved directly from the Nobel Prize API to answer four questions about recipients' birth countries, gender, repeat awards, and approximate ages. The data includes all award years available when this document is rendered, including Economic Sciences. Organizations are excluded from the four analyses because these questions concern people.
+
+## 1. Load packages
+
+Install any missing packages in the RStudio Console before rendering:
+
+```{r}
+#| label: install-packages
+#| eval: false
+install.packages(c("jsonlite", "dplyr", "tidyr", "purrr", "ggplot2", "knitr"))
+```
+
+```{r}
+#| label: setup
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(knitr)
+
+options(timeout = max(120, getOption("timeout")))
+theme_set(theme_minimal(base_size = 12))
+```
+
+## 2. Retrieve the JSON data
+
+The API returns records in pages. This loop requests successive pages using an offset so the analysis is not limited to the first page. If retrieval fails, rendering stops instead of silently analyzing an incomplete download.
+
+```{r}
+#| label: retrieve-json
+endpoint <- "https://api.nobelprize.org/2.1/laureates"
+page_size <- 1000L
+offset <- 0L
+all_laureates <- list()
+seen_ids <- character()
+expected_total <- NA_integer_
+
+repeat {
+  request_url <- paste0(endpoint, "?limit=", page_size, "&offset=", offset)
+  page <- jsonlite::fromJSON(request_url, simplifyVector = FALSE)
+
+  # Verify that the expected response structure is present.
+  if (!"laureates" %in% names(page)) {
+    stop("The API response does not contain a laureates field.")
+  }
+  records <- page$laureates
+  if (offset == 0L && !is.null(page$meta$count)) {
+    expected_total <- as.integer(page$meta$count)
+  }
+  if (length(records) == 0L) break
+
+  page_ids <- vapply(records, function(x) as.character(x$id), character(1))
+  if (anyDuplicated(page_ids) || any(page_ids %in% seen_ids)) {
+    stop("Repeated laureate IDs detected across API pages; check pagination.")
+  }
+
+  all_laureates <- c(all_laureates, records)
+  seen_ids <- c(seen_ids, page_ids)
+  offset <- offset + length(records)
+
+  if (!is.na(expected_total) && offset >= expected_total) break
+}
+
+stopifnot(length(all_laureates) > 0L)
+if (!is.na(expected_total) && length(all_laureates) != expected_total) {
+  stop("The downloaded record count does not match the API total.")
+}
+retrieved_on <- Sys.Date()
+
+knitr::kable(data.frame(
+  Retrieved = as.character(retrieved_on),
+  Laureate_records = length(all_laureates)
+), caption = "API retrieval summary (people and organizations)")
+```
+
+## 3. Transform and check the data
+
+I first create one row per laureate, keeping awards in a nested list column. I then expand the awards into a tidy table with one row per recipient per award. A person with two awards therefore has two rows in the award table.
+
+```{r}
+#| label: tidy-data
+# Extract one text value safely when a nested field might be missing.
+get_text <- function(x, ...) {
+  value <- purrr::pluck(x, ..., .default = NA_character_)
+  if (length(value) != 1L || is.list(value)) return(NA_character_)
+  value <- as.character(value)
+  if (is.na(value) || !nzchar(value)) return(NA_character_)
+  value
+}
+
+laureates <- purrr::map_dfr(all_laureates, function(x) {
+  tibble(
+    id = get_text(x, "id"),
+    name = coalesce(get_text(x, "knownName", "en"),
+                    get_text(x, "fullName", "en"),
+                    get_text(x, "orgName", "en")),
+    is_organization = !is.null(x$orgName),
+    gender = tolower(get_text(x, "gender")),
+    birth_date = get_text(x, "birth", "date"),
+    birth_country = get_text(x, "birth", "place", "country", "en"),
+    prizes = list(purrr::pluck(x, "nobelPrizes", .default = list()))
+  )
+})
+
+# Extract only the prize fields needed for these questions.
+awards <- laureates %>%
+  mutate(prizes = purrr::map(prizes, function(prize_list) {
+    purrr::map(prize_list, function(p) {
+      list(award_year = get_text(p, "awardYear"),
+           category = get_text(p, "category", "en"))
+    })
+  })) %>%
+  tidyr::unnest_longer(prizes) %>%
+  tidyr::unnest_wider(prizes) %>%
+  mutate(
+    award_year = as.integer(award_year),
+    birth_year = as.integer(substr(birth_date, 1, 4)),
+    birth_year = if_else(birth_year > 0L, birth_year, NA_integer_),
+    approximate_age = award_year - birth_year
+  )
+
+# Each recipient/year/category combination should be unique.
+duplicate_awards <- awards %>%
+  count(id, award_year, category) %>%
+  filter(n > 1L)
+stopifnot(nrow(duplicate_awards) == 0L)
+stopifnot(!anyNA(awards$id), !anyNA(awards$award_year),
+          !anyNA(awards$category))
+
+people <- laureates %>% filter(!is_organization)
+person_awards <- awards %>% filter(!is_organization)
+
+data_checks <- tibble(
+  Check = c("Unique individual recipients", "Individual recipient-award rows",
+            "Individuals missing birth country", "Individual awards missing birth year",
+            "Individual awards with negative calculated age"),
+  Count = c(n_distinct(people$id), nrow(person_awards),
+            sum(is.na(people$birth_country)),
+            sum(is.na(person_awards$birth_year)),
+            sum(person_awards$approximate_age < 0, na.rm = TRUE))
+)
+knitr::kable(data_checks, caption = "Data quality and counting checks")
+knitr::kable(person_awards %>%
+  select(name, gender, birth_country, birth_year, award_year, category) %>%
+  head(6), caption = "Preview of the tidy award table")
+```
+
+## Question 1: Which ten birth countries have the most Nobel Prize laureates?
+
+I count each individual once, regardless of how many awards they received. Countries use the API's historical birth-country labels, so historical and present-day country names may appear separately. Birth country does not establish citizenship. Individuals without a birth country are excluded from this question.
+
+```{r}
+#| label: birth-country-counts
+top_countries <- people %>%
+  filter(!is.na(birth_country)) %>%
+  distinct(id, birth_country) %>%
+  count(birth_country, name = "laureates") %>%
+  arrange(desc(laureates), birth_country) %>%
+  slice_head(n = 10)
+
+knitr::kable(top_countries,
+             col.names = c("Birth country", "Unique laureates"),
+             caption = "Ten birth countries with the most individual laureates")
+
+ggplot(top_countries, aes(x = reorder(birth_country, laureates), y = laureates)) +
+  geom_col(fill = "#237A8B") +
+  coord_flip() +
+  labs(title = "Top ten birth countries of Nobel laureates",
+       x = "Birth country (API historical label)", y = "Unique individuals")
+```
+
+**Answer:** The highest-ranked birth country is `r top_countries$birth_country[1]`, with `r top_countries$laureates[1]` unique individual laureates. The table and chart show the ten highest counts. Ties at the tenth position are resolved alphabetically to display exactly ten countries.
+
+## Question 2: What is the ratio of male to female Nobel Prize winners in different categories?
+
+I count each person once within each category. A person who won twice in the same category is counted once here, while someone who won in two categories is counted once in each. Organizations and records without a male or female gender value are excluded. The ratio is the number of male recipients divided by female recipients.
+
+```{r}
+#| label: gender-ratios
+gender_counts <- person_awards %>%
+  filter(gender %in% c("male", "female")) %>%
+  distinct(id, category, gender) %>%
+  count(category, gender, name = "recipients") %>%
+  complete(category, gender = c("male", "female"),
+           fill = list(recipients = 0L))
+
+gender_summary <- gender_counts %>%
+  pivot_wider(names_from = gender, values_from = recipients, values_fill = 0) %>%
+  mutate(
+    male_to_female = male / na_if(female, 0L),
+    ratio = if_else(is.na(male_to_female), "Undefined (no female recipients)",
+                    sprintf("%.2f:1", male_to_female)),
+    female_percent = 100 * female / (male + female)
+  ) %>%
+  arrange(category)
+
+knitr::kable(gender_summary %>%
+  select(category, male, female, ratio, female_percent), digits = 1,
+  col.names = c("Category", "Male", "Female", "Male-to-female ratio", "Female (%)"))
+
+ggplot(gender_counts, aes(x = category, y = recipients, fill = gender)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c(female = "#D47735", male = "#237A8B")) +
+  labs(title = "Male and female recipients by category",
+       x = NULL, y = "Unique recipients within category", fill = "Gender")
+
+highest_female_share <- gender_summary %>%
+  filter(female_percent == max(female_percent))
+```
+
+**Answer:** The table gives the male-to-female ratio in each category. A ratio of 10:1 means ten male recipients for every female recipient. The highest female percentage is `r round(highest_female_share$female_percent[1], 1)`%, in `r paste(highest_female_share$category, collapse = ", ")`. These are descriptive comparisons and do not explain the causes of the differences.
+
+## Question 3: Which people have received more than one Nobel Prize, and in which categories?
+
+I group award records by laureate ID to identify repeat recipients. The year and category of each award are shown together.
+
+```{r}
+#| label: repeat-recipients
+repeat_winners <- person_awards %>%
+  arrange(award_year, category) %>%
+  group_by(id, name) %>%
+  summarise(
+    number_of_awards = n(),
+    awards_received = paste(paste0(award_year, " - ", category), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  filter(number_of_awards > 1) %>%
+  arrange(desc(number_of_awards), name)
+
+knitr::kable(repeat_winners %>% select(-id),
+  col.names = c("Recipient", "Number of awards", "Award years and categories"),
+  caption = "Individuals who received more than one Nobel Prize")
+```
+
+**Answer:** There are `r nrow(repeat_winners)` individual repeat recipients in the retrieved data: `r paste(repeat_winners$name, collapse = ", ")`. Their award years and categories are listed in the table. Repeat-winning organizations are excluded.
+
+## Question 4: How does average approximate age differ by category before 2000 versus 2000 onward?
+
+I subtract birth year from award year and compare average ages for awards before 2000 with those from 2000 onward. This combines birth information, award years, and categories rather than simply counting recipients. Age is approximate because the calculation does not use the birthday or ceremony date. Each award is an observation, so repeat recipients contribute their age at each award.
+
+```{r}
+#| label: age-comparison
+age_data <- person_awards %>%
+  filter(!is.na(approximate_age), approximate_age >= 0) %>%
+  mutate(period = if_else(award_year < 2000, "Before 2000", "2000 onward"),
+         period = factor(period, levels = c("Before 2000", "2000 onward")))
+
+age_summary <- age_data %>%
+  group_by(category, period) %>%
+  summarise(
+    award_count = n(),
+    mean_age = mean(approximate_age),
+    .groups = "drop"
+  ) %>%
+  arrange(category, period)
+
+knitr::kable(age_summary, digits = 1,
+  col.names = c("Category", "Period", "Recipient-award records", "Mean approximate age"))
+
+age_changes <- age_summary %>%
+  select(category, period, mean_age) %>%
+  pivot_wider(names_from = period, values_from = mean_age) %>%
+  mutate(change_years = `2000 onward` - `Before 2000`) %>%
+  arrange(desc(change_years))
+
+knitr::kable(age_changes, digits = 1,
+  col.names = c("Category", "Mean before 2000", "Mean 2000 onward", "Change (years)"),
+  caption = "Positive changes indicate older average ages from 2000 onward")
+
+ggplot(age_summary, aes(x = category, y = mean_age, fill = period)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("Before 2000" = "#237A8B", "2000 onward" = "#D47735")) +
+  labs(title = "Average approximate age at award by period",
+       x = NULL, y = "Mean approximate age (years)", fill = "Award period")
+```
+
+**Answer:** Average approximate age is higher from 2000 onward in `r sum(age_changes$change_years > 0, na.rm = TRUE)` categories and lower in `r sum(age_changes$change_years < 0, na.rm = TRUE)` categories. The change column shows the size and direction of each difference. This is a descriptive comparison of two periods of different lengths; it is not a test of statistical significance or evidence of a cause.
+
+## Limitations
+
+The results depend on records available from the API on `r retrieved_on`. Birth-country labels may reflect historical boundaries. Missing birth countries affect question 1, and missing birth years affect question 4; those records remain available for other questions. Gender comparisons use the API's recorded male and female values. Approximate ages use only years. Award totals and unique-recipient totals are different, so each question explicitly states its counting unit.
+
+## References
+
+- Nobel Prize Outreach. (n.d.). *Nobel Prize Developer Zone*. <https://www.nobelprize.org/about/developer-zone-2/>
+- Nobel Prize Outreach. (n.d.). *Getting started with Nobel Prize API*. <https://nobelprize.readme.io/reference/getting-started>
+- Nobel Prize Outreach. (n.d.). *Laureates API, version 2.1* \[JSON data\]. <https://api.nobelprize.org/2.1/laureates>
+- R package documentation: `help(package = "jsonlite")`, `help(package = "dplyr")`, `help(package = "tidyr")`, `help(package = "purrr")`, and `help(package = "ggplot2")`.
+- 
