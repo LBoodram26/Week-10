@@ -1,0 +1,750 @@
+---
+title: "Assignment 10A: Sentiment Analysis"
+author: "Lakeranie Boodram"
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: true
+  message: false
+---
+
+## Introduction
+
+This assignment reproduces and extends the sentiment analysis example from Chapter 2 of *Text Mining with R* by Julia Silge and David Robinson. First, I analyze Jane Austen’s novels and compare results using the Bing, AFINN, and NRC sentiment lexicons.
+
+Next, I extend the analysis using *A Christmas Carol* by Charles Dickens and add the Syuzhet sentiment dictionary. I compare the sentiment patterns, dictionary coverage, and words contributing to the results.
+
+The original example code is available at: <https://www.tidytextmining.com/sentiment>
+
+## Load Packages
+
+These packages support importing text, organizing words into a tidy format, matching words to sentiment dictionaries, and creating visualizations.
+
+```{r}
+#| message: false
+# Load packages used throughout the analysis.
+library(tidyverse)
+library(tidytext)
+library(janeaustenr)
+library(syuzhet)
+```
+
+## Part 1: Reproduce the Chapter 2 Example
+
+### Prepare the Jane Austen Text
+
+The `janeaustenr` package provides the novels used in the original example. I retain the book title, line number, and chapter number, then split the text into individual words. The resulting dataset contains one word per row.
+
+This code is adapted from Chapter 2 of Silge and Robinson’s *Text Mining with R*.
+
+```{r}
+# Obtain the novels included in the original example.
+austen_text <- austen_books()
+
+# Preserve each word's location within its book.
+tidy_books <- austen_text %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(
+      str_detect(
+        text,
+        regex("^chapter [\\divxlc]", ignore_case = TRUE)
+      )
+    )
+  ) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+
+# Display the first ten words and their locations.
+head(tidy_books, 10)
+```
+
+### Count Words in Each Novel
+
+These counts represent word tokens, including repeated words. They provide an overview of the amount of text available for each novel.
+
+```{r}
+# Count all word tokens in each book.
+book_word_counts <- tidy_books %>%
+  count(book, name = "total_words")
+
+knitr::kable(
+  book_word_counts,
+  col.names = c("Book", "Total Words"),
+  caption = "Word counts for Jane Austen's novels"
+)
+```
+
+### Analyze Sentiment Using the Bing Lexicon
+
+The Bing lexicon classifies words as positive or negative. Following the original example, I match the words in each novel to this dictionary and group the results into sections using the original 80-line indexing method. For each section, I subtract the number of negative words from the number of positive words.
+
+A positive score means more positive words were matched, while a negative score means more negative words were matched.
+
+```{r}
+# Retrieve the Bing sentiment dictionary.
+bing_lexicon <- tidytext::get_sentiments("bing")
+
+# Preserve all Bing dictionary matches, including words in both categories.
+# Calculate net sentiment using the original chapter's indexing method.
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(
+    bing_lexicon,
+    by = "word",
+    relationship = "many-to-many"
+  ) %>%
+  count(
+    book,
+    index = linenumber %/% 80,
+    sentiment
+  ) %>%
+  pivot_wider(
+    names_from = sentiment,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  mutate(net_sentiment = positive - negative)
+
+# Preview the calculated scores.
+head(jane_austen_sentiment, 10)
+```
+
+### Visualize Sentiment Throughout the Novels
+
+The graph below shows how the balance of positive and negative words changes throughout each novel. Each panel represents one book, and each bar represents a section of text.
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+
+ggplot(
+  jane_austen_sentiment,
+  aes(x = index, y = net_sentiment, fill = book)
+) +
+  geom_col(show.legend = FALSE) +
+  geom_hline(
+    yintercept = 0,
+    color = "gray40",
+    linewidth = 0.3
+  ) +
+  facet_wrap(~book, ncol = 2, scales = "free_x") +
+  labs(
+    title = "Sentiment Throughout Jane Austen's Novels",
+    subtitle = "Bing lexicon: positive word count minus negative word count",
+    x = "Text section (80-line indexing)",
+    y = "Net sentiment"
+  ) +
+  theme_minimal()
+```
+
+### Identify Joy Words in Emma
+
+The NRC lexicon associates words with emotions, including joy. Following the Chapter 2 example, I select the joy category and identify the most frequently occurring joy words in *Emma*.
+
+```{r}
+# Retrieve the dictionaries for use in this analysis.
+nrc_lexicon <- tidytext::get_sentiments("nrc")
+afinn_lexicon <- tidytext::get_sentiments("afinn")
+
+# Select NRC words associated with joy.
+nrc_joy <- nrc_lexicon %>%
+  filter(sentiment == "joy")
+
+# Count occurrences of joy words in Emma.
+emma_joy_words <- tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy, by = "word") %>%
+  count(word, sort = TRUE)
+
+knitr::kable(
+  head(emma_joy_words, 10),
+  col.names = c("Word", "Count"),
+  caption = "Ten most frequent NRC joy words in Emma"
+)
+```
+
+### Compare Bing, AFINN, and NRC
+
+Next, I compare the three sentiment dictionaries using *Pride and Prejudice*. I use the same text sections for each dictionary.
+
+AFINN assigns numerical scores to words, which I sum within each section. For Bing and NRC, I calculate the number of positive matches minus the number of negative matches. For NRC, I include only the positive and negative categories in this comparison.
+
+```{r}
+# Select the novel used in the original dictionary comparison.
+pride_prejudice <- tidy_books %>%
+  filter(book == "Pride & Prejudice")
+
+# Calculate summed AFINN scores for each section.
+afinn_results <- pride_prejudice %>%
+  inner_join(afinn_lexicon, by = "word") %>%
+  group_by(index = linenumber %/% 80) %>%
+  summarise(
+    net_sentiment = sum(value),
+    .groups = "drop"
+  ) %>%
+  mutate(method = "AFINN")
+
+# Calculate Bing positive-minus-negative scores.
+bing_results <- pride_prejudice %>%
+  inner_join(
+    bing_lexicon,
+    by = "word",
+    relationship = "many-to-many"
+  ) %>%
+  count(index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(
+    names_from = sentiment,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  mutate(
+    net_sentiment = positive - negative,
+    method = "Bing"
+  ) %>%
+  select(index, net_sentiment, method)
+
+# Keep only NRC's positive and negative categories.
+nrc_polarity <- nrc_lexicon %>%
+  filter(sentiment %in% c("positive", "negative"))
+
+# Some NRC words belong to both categories.
+# The many-to-many relationship is expected for this join.
+nrc_results <- pride_prejudice %>%
+  inner_join(
+    nrc_polarity,
+    by = "word",
+    relationship = "many-to-many"
+  ) %>%
+  count(index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(
+    names_from = sentiment,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  mutate(
+    net_sentiment = positive - negative,
+    method = "NRC"
+  ) %>%
+  select(index, net_sentiment, method)
+
+# Combine the results into one table.
+sentiment_comparison <- bind_rows(
+  afinn_results,
+  bing_results,
+  nrc_results
+)
+```
+
+### Visualize Differences Between Dictionaries
+
+The panels below show the sentiment pattern produced by each dictionary. Each panel uses its own vertical scale so that changes throughout the story are visible. Bar heights across panels should not be interpreted as equivalent sentiment intensity.
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+
+ggplot(
+  sentiment_comparison,
+  aes(x = index, y = net_sentiment, fill = method)
+) +
+  geom_col(show.legend = FALSE) +
+  geom_hline(
+    yintercept = 0,
+    color = "gray40",
+    linewidth = 0.3
+  ) +
+  facet_wrap(~method, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Comparing Sentiment Dictionaries",
+    subtitle = "Pride and Prejudice",
+    x = "Text section (80-line indexing)",
+    y = "Sentiment score (method-specific scale)"
+  ) +
+  theme_minimal()
+```
+
+### Most Common Positive and Negative Words
+
+I count how frequently each word matches the Bing sentiment dictionary across the six novels. This helps identify which words contribute most to the sentiment results.
+
+```{r}
+# Count occurrences of words matched to the Bing dictionary.
+bing_word_counts <- tidy_books %>%
+  inner_join(
+    bing_lexicon,
+    by = "word",
+    relationship = "many-to-many"
+  ) %>%
+  count(word, sentiment, sort = TRUE)
+
+# Select the ten most frequent words in each sentiment category.
+top_sentiment_words <- bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(order_by = n, n = 10, with_ties = FALSE) %>%
+  ungroup()
+
+knitr::kable(
+  top_sentiment_words,
+  col.names = c("Word", "Sentiment", "Count"),
+  caption = "Most frequent positive and negative words in Austen's novels"
+)
+```
+
+### Visualize the Words Contributing to Sentiment
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+top_sentiment_words %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(x = n, y = word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "negative" = "#D55E00",
+      "positive" = "#0072B2"
+    )
+  ) +
+  labs(
+    title = "Words Contributing Most to Sentiment",
+    subtitle = "Ten most frequent words in each Bing sentiment category",
+    x = "Word occurrences",
+    y = NULL
+  ) +
+  theme_minimal()
+```
+
+### Why Context Matters
+
+A limitation of this method is that a dictionary assigns sentiment to individual words without interpreting the surrounding sentence. For example, the original chapter explains that Bing classifies “miss” as negative, even though Austen often uses it as a title for a woman.
+
+I retain the original classifications here to reproduce the example. However, this illustrates why a high word count does not necessarily mean that the word accurately represents the emotional tone of the text. The same limitation applies to negation: a positive word can appear in a negative phrase, such as “not happy.”
+
+## Part 2: Extend the Analysis to A Christmas Carol
+
+### Import the Text
+
+For the first extension, I use *A Christmas Carol* by Charles Dickens. I import the text directly from Project Gutenberg so that the analysis does not depend on a file stored on my computer.
+
+Source: <https://www.gutenberg.org/ebooks/46>
+
+```{r}
+# Read the text from its online source.
+carol_url <- "https://www.gutenberg.org/cache/epub/46/pg46.txt"
+
+carol_raw <- readr::read_lines(carol_url)
+```
+
+### Remove Material Outside the Story
+
+I locate the Gutenberg start and end markers to remove the licensing information. I then locate the first chapter heading to exclude the title page, preface, and table of contents.
+
+```{r}
+# Locate the Gutenberg boundaries.
+start_marker <- which(
+  str_detect(carol_raw, "^\\*\\*\\* START OF")
+)
+
+end_marker <- which(
+  str_detect(carol_raw, "^\\*\\*\\* END OF")
+)
+
+# Confirm that the expected boundaries were found.
+stopifnot(
+  length(start_marker) == 1,
+  length(end_marker) == 1,
+  start_marker < end_marker
+)
+
+# Keep the material between the Gutenberg markers.
+carol_body <- carol_raw[
+  seq.int(start_marker + 1, end_marker - 1)
+]
+
+# Match the uppercase chapter heading, not the contents entry.
+story_start <- which(
+  str_detect(carol_body, "^STAVE I:")
+)[1]
+
+stopifnot(!is.na(story_start))
+
+# Retain the story from the first chapter onward.
+carol_lines <- tibble(
+  text = carol_body[seq.int(story_start, length(carol_body))]
+) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(
+      str_detect(text, "^STAVE\\s+[IVX]+:")
+    )
+  )
+
+# Verify that all five chapters were identified.
+stopifnot(max(carol_lines$chapter) == 5)
+
+# Display the beginning of the cleaned text.
+head(carol_lines, 10)
+```
+
+### Convert the Story to Tidy Text
+
+I split the text into individual words while preserving the chapter and line numbers. I exclude chapter headings from the word counts.
+
+For this extension, I group consecutive word tokens into sections of 500 words. This reduces dependence on how the source file wraps its lines. The final section may contain fewer than 500 words.
+
+```{r}
+# Create one row per word.
+tidy_carol <- carol_lines %>%
+  filter(!str_detect(text, "^STAVE\\s+[IVX]+:")) %>%
+  unnest_tokens(word, text) %>%
+  mutate(
+    word_id = row_number(),
+    section = (word_id - 1) %/% 500 + 1
+  )
+
+# Preview the tokenized story.
+head(tidy_carol, 10)
+```
+
+### Check the Imported Data
+
+```{r}
+# Count word tokens in each chapter.
+carol_chapter_counts <- tidy_carol %>%
+  count(chapter, name = "total_words")
+
+knitr::kable(
+  carol_chapter_counts,
+  col.names = c("Chapter", "Total Words"),
+  caption = "Word counts by chapter in A Christmas Carol"
+)
+
+# Summarize the prepared dataset.
+carol_summary <- tidy_carol %>%
+  summarise(
+    total_words = n(),
+    chapters = n_distinct(chapter),
+    text_sections = n_distinct(section)
+  )
+
+knitr::kable(
+  carol_summary,
+  col.names = c("Total Words", "Chapters", "Text Sections"),
+  caption = "Overview of the prepared Dickens text"
+)
+```
+
+## Part 3: Add the Syuzhet Sentiment Dictionary
+
+### Prepare the Dictionaries
+
+For the second extension, I add the Syuzhet dictionary from the `syuzhet` package. I apply Bing and Syuzhet to the same 500-word sections of *A Christmas Carol*. This keeps the text and section boundaries consistent while changing the dictionary.
+
+Bing contributes +1 for a positive match and -1 for a negative match. Syuzhet provides numerical word scores. I use the Syuzhet dictionary in a word-level tidy-text analysis; this does not apply sentence-level negation or sarcasm handling.
+
+Some Syuzhet words have multiple distinct scores. After removing exact duplicate entries, I use the mean of the available scores for each word. This is an explicit preprocessing choice for this word-level analysis, not a claim about the package's default scoring behavior. It prevents repeated dictionary entries from multiplying word occurrences and inflating coverage.
+
+Dictionary documentation: <https://search.r-project.org/CRAN/refmans/syuzhet/html/get_sentiment_dictionary.html>
+
+```{r}
+# Convert Bing labels to scores, preserving both labels where present.
+# A word with both labels contributes +1 - 1 = 0.
+bing_scores <- bing_lexicon %>%
+  distinct(word, sentiment) %>%
+  mutate(value = if_else(sentiment == "positive", 1, -1)) %>%
+  group_by(word) %>%
+  summarise(value = sum(value), .groups = "drop")
+
+# Retrieve the additional dictionary.
+syuzhet_entries <- syuzhet::get_sentiment_dictionary("syuzhet") %>%
+  as_tibble() %>%
+  select(word, value) %>%
+  distinct()
+
+# Identify words with multiple distinct scores for transparency.
+syuzhet_multiple_scores <- syuzhet_entries %>%
+  count(word, name = "number_of_scores") %>%
+  filter(number_of_scores > 1)
+
+# Use one score per word so joins preserve the original token counts.
+syuzhet_lexicon <- syuzhet_entries %>%
+  group_by(word) %>%
+  summarise(value = mean(value), .groups = "drop")
+
+# Confirm that each dictionary has a single score per word.
+stopifnot(
+  !anyDuplicated(bing_scores$word),
+  !anyDuplicated(syuzhet_lexicon$word),
+  is.numeric(syuzhet_lexicon$value)
+)
+
+knitr::kable(
+  head(syuzhet_lexicon, 10),
+  caption = "Preview of the Syuzhet dictionary"
+)
+```
+
+### Score the Same Text with Both Dictionaries
+
+I retain every word token, including words that do not match a dictionary. Unmatched words contribute zero to the score, but they are counted separately when measuring dictionary coverage. A lack of a match does not prove that a word is emotionally neutral.
+
+```{r}
+# Join each dictionary separately to avoid multiplying word occurrences.
+carol_bing_words <- tidy_carol %>%
+  left_join(bing_scores, by = "word", relationship = "many-to-one") %>%
+  mutate(method = "Bing")
+
+carol_syuzhet_words <- tidy_carol %>%
+  left_join(syuzhet_lexicon, by = "word", relationship = "many-to-one") %>%
+  mutate(method = "Syuzhet")
+
+carol_scored_words <- bind_rows(carol_bing_words, carol_syuzhet_words)
+
+# Divide by the actual section length to account for the shorter final section.
+carol_sentiment <- carol_scored_words %>%
+  group_by(method, section) %>%
+  summarise(
+    total_words = n(),
+    matched_words = sum(!is.na(value)),
+    raw_score = sum(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(score_per_100_words = 100 * raw_score / total_words)
+
+knitr::kable(
+  head(carol_sentiment, 12),
+  digits = 2,
+  caption = "Sentiment scores for the first twelve method-section combinations"
+)
+```
+
+### Compare Sentiment Patterns
+
+The chart shows sentiment per 100 word tokens. Dividing by text length accounts for unequal section sizes, but it does not make the two dictionaries' scoring scales equivalent. I therefore focus on the direction and location of changes within each panel. Each panel has its own vertical scale.
+
+```{r}
+#| fig-width: 10
+#| fig-height: 7
+
+ggplot(
+  carol_sentiment,
+  aes(x = section, y = score_per_100_words, color = method)
+) +
+  geom_hline(yintercept = 0, color = "gray60", linetype = "dashed") +
+  geom_line(linewidth = 0.7, show.legend = FALSE) +
+  geom_point(size = 1.2, show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y") +
+  scale_color_manual(values = c("Bing" = "#0072B2", "Syuzhet" = "#D55E00")) +
+  labs(
+    title = "Sentiment Throughout A Christmas Carol",
+    subtitle = "Identical 500-word sections; final section may be shorter",
+    x = "Text section",
+    y = "Score per 100 words (method-specific scale)"
+  ) +
+  theme_minimal()
+```
+
+### Compare Dictionary Coverage
+
+Coverage is the percentage of word occurrences that match a dictionary entry. Repeated words count each time they occur. Greater coverage means that more of the text receives a dictionary score; it does not necessarily mean that the sentiment estimates are more accurate.
+
+```{r}
+carol_coverage <- carol_scored_words %>%
+  group_by(method) %>%
+  summarise(
+    total_words = n(),
+    matched_words = sum(!is.na(value)),
+    coverage_percent = 100 * matched_words / total_words,
+    .groups = "drop"
+  )
+
+knitr::kable(
+  carol_coverage,
+  digits = 2,
+  col.names = c("Dictionary", "Total Word Tokens", "Matched Tokens", "Coverage (%)"),
+  caption = "Dictionary coverage for A Christmas Carol"
+)
+```
+
+### Interpret the Dickens Results
+
+In this analysis, Bing matches 1,926 of the 28,710 word tokens (6.71%), while Syuzhet matches 3,293 (11.47%). Syuzhet therefore covers 1,367 additional word occurrences, a difference of about 4.76 percentage points. This wider coverage changes which words contribute to the analysis, but does not by itself establish greater accuracy.
+
+Both graphs show a mixture of positive and negative sections, with a positive rise near the end. This pattern is consistent with the story's movement toward Scrooge's changed attitude, although the dictionary scores alone cannot establish a character's emotions. The ending is not a steady increase: both methods show a dip immediately before the final section.
+
+The dictionaries also disagree on some sections. For example, the plotted Bing score is negative in section 5, while the Syuzhet score is positive. Both methods show a pronounced negative dip around section 42. These examples show that the methods can agree on broad changes while giving different classifications to individual sections. Their score magnitudes remain method-specific, even after division by text length.
+
+### Words Contributing Most to the Dickens Scores
+
+To understand these differences, I calculate each word's total contribution as its number of occurrences multiplied by its dictionary score. I select the five strongest positive and five strongest negative contributions for each method. The rankings are within each dictionary; contribution sizes are not directly comparable across dictionaries.
+
+```{r}
+carol_word_contributions <- carol_scored_words %>%
+  filter(!is.na(value), value != 0) %>%
+  group_by(method, word, value) %>%
+  summarise(occurrences = n(), .groups = "drop") %>%
+  mutate(
+    contribution = occurrences * value,
+    polarity = if_else(contribution > 0, "Positive", "Negative")
+  )
+
+carol_top_contributions <- carol_word_contributions %>%
+  group_by(method, polarity) %>%
+  slice_max(abs(contribution), n = 5, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(method, polarity, desc(abs(contribution)))
+
+knitr::kable(
+  carol_top_contributions %>%
+    select(method, polarity, word, occurrences, value, contribution),
+  digits = 2,
+  col.names = c("Dictionary", "Polarity", "Word", "Occurrences", "Word Score", "Contribution"),
+  caption = "Largest positive and negative word contributions in A Christmas Carol"
+)
+
+# Generate an interpretation from the computed rankings.
+leading_words <- carol_word_contributions %>%
+  group_by(method, polarity) %>%
+  slice_max(abs(contribution), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+bing_positive_word <- leading_words %>%
+  filter(method == "Bing", polarity == "Positive") %>% pull(word)
+bing_negative_word <- leading_words %>%
+  filter(method == "Bing", polarity == "Negative") %>% pull(word)
+syuzhet_positive_word <- leading_words %>%
+  filter(method == "Syuzhet", polarity == "Positive") %>% pull(word)
+syuzhet_negative_word <- leading_words %>%
+  filter(method == "Syuzhet", polarity == "Negative") %>% pull(word)
+```
+
+For Bing, the largest positive contribution comes from **`r bing_positive_word`**, and the largest negative contribution comes from **`r bing_negative_word`**. For Syuzhet, the corresponding words are **`r syuzhet_positive_word`** and **`r syuzhet_negative_word`**. These are contributions to the dictionary-based totals, not judgments about every use of these words. Reading the surrounding sentences would be necessary to assess whether each classification fits the context.
+
+## Part 4: Compare the Extension with the Original Example
+
+### Compare the Corpora Using the Same Dictionary
+
+The original analysis includes six Jane Austen novels, while my extension uses one Dickens novella. Raw sentiment totals would be affected by their different lengths. To make a consistent descriptive comparison, I apply the same Bing word scores to both corpora and report net sentiment per 100 word tokens. This table uses the full token count of each text rather than the earlier section sizes.
+
+```{r}
+austen_bing_words <- tidy_books %>%
+  mutate(book = as.character(book)) %>%
+  left_join(bing_scores, by = "word", relationship = "many-to-one")
+
+corpus_comparison <- bind_rows(
+  austen_bing_words %>% select(book, word, value),
+  carol_bing_words %>%
+    transmute(book = "A Christmas Carol", word, value)
+) %>%
+  group_by(book) %>%
+  summarise(
+    total_words = n(),
+    matched_tokens = sum(!is.na(value)),
+    net_score = sum(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    coverage_percent = 100 * matched_tokens / total_words,
+    net_per_100 = 100 * net_score / total_words
+  )
+
+knitr::kable(
+  corpus_comparison %>%
+    select(book, total_words, coverage_percent, net_per_100),
+  digits = 2,
+  col.names = c("Text", "Word Tokens", "Bing Coverage (%)", "Net Bing Score per 100 Words"),
+  caption = "A consistent Bing comparison of the original and extended corpora"
+)
+
+# Compare Dickens with the pooled Austen corpus, weighting by token count.
+austen_pooled_rate <- austen_bing_words %>%
+  summarise(rate = 100 * sum(value, na.rm = TRUE) / n()) %>%
+  pull(rate)
+carol_bing_rate <- corpus_comparison %>%
+  filter(book == "A Christmas Carol") %>% pull(net_per_100)
+comparison_direction <- if (carol_bing_rate > austen_pooled_rate) {
+  "higher"
+} else if (carol_bing_rate < austen_pooled_rate) {
+  "lower"
+} else {
+  "equal"
+}
+```
+
+The Dickens text has a net Bing score of **`r round(carol_bing_rate, 2)` per 100 words**, compared with **`r round(austen_pooled_rate, 2)`** for the pooled Austen corpus. The Dickens rate is **`r comparison_direction`**. This is a comparison of dictionary matches, not proof that one author's writing is emotionally happier or sadder. The Austen texts retain the original example's preparation, while the Dickens text excludes its front matter and chapter headings, so preprocessing is not perfectly identical.
+
+### How the Results Differ
+
+In the original *Pride and Prejudice* comparison, the NRC graph is positive in nearly all sections, while Bing identifies more negative stretches. AFINN also shows many positive sections, but its weighted scores have a different range. In the Dickens extension, both Bing and Syuzhet show repeated changes across zero and a positive ending. Thus, the new text produces its own sentiment pattern, and adding another dictionary changes both the vocabulary coverage and some section-level conclusions.
+
+The Austen word-frequency results also reveal a specific context problem: “miss” appears 1,855 times as a negative match, even though it is often a title. The Dickens contribution table makes the influential words in the new corpus visible in the same way. Examining those words is more informative than assuming that every numerical peak or dip directly represents the story's emotional tone.
+
+The original plots use 80-line sections and raw scores, whereas the Dickens plots use 500-word sections and scores per 100 words. I therefore do not directly compare their horizontal positions or bar heights. The table above provides a separate comparison with a common dictionary and denominator.
+
+## Limitations
+
+- Individual-word dictionaries do not interpret negation, sarcasm, speakers, or narrative context. A phrase such as “not happy” can still contribute a positive match.
+- Many tokens do not match either dictionary. Unmatched tokens contribute no score but are not necessarily neutral.
+- Greater dictionary coverage does not establish accuracy. I do not have human-labeled sentiment judgments against which to validate these estimates.
+- Section boundaries affect the apparent narrative pattern. A 500-word section may cross a chapter boundary, and the final section contains only 210 tokens, making its rate more sensitive to individual words.
+- Averaging multiple Syuzhet scores for a word is a documented modeling choice. Another resolution rule could change the results.
+- Whole-book averages can hide substantial local changes. Dictionary scores describe textual patterns and should not be treated as direct measurements of character emotions or author intent.
+
+## Conclusion
+
+This assignment reproduced the main tidy-text sentiment workflow using Jane Austen's novels and extended it with a different corpus and an additional dictionary. The Dickens results show that Bing and Syuzhet can identify similar broad changes while disagreeing about individual sections. Syuzhet matched more word occurrences in this text, but that does not establish that it is more accurate.
+
+The main lesson is that sentiment results depend on the text, dictionary, and preprocessing choices. Looking at coverage, influential words, and surrounding context helps explain the scores and prevents overinterpreting a single graph.
+
+## References
+
+Silge, J., & Robinson, D. (2017). *Text mining with R: A tidy approach*. O'Reilly Media. Chapter 2, “Sentiment analysis with tidy data.” <https://www.tidytextmining.com/sentiment>. The Part 1 tokenization, sentiment joins, section scores, dictionary comparison, and word-frequency analysis are adapted from the example code on this page.
+
+Dickens, C. (1843). *A Christmas Carol in Prose; Being a Ghost Story of Christmas*. Project Gutenberg, eBook No. 46. <https://www.gutenberg.org/ebooks/46>. Plain-text data: <https://www.gutenberg.org/cache/epub/46/pg46.txt>.
+
+*Syuzhet package documentation: Sentiment dictionaries*. R documentation. <https://search.r-project.org/CRAN/refmans/syuzhet/html/get_sentiment_dictionary.html>. Source of the additional Syuzhet dictionary used in Part 3.
+
+### AI Assistance Disclosure
+
+I used ChatGPT to help draft and revise R code, troubleshoot errors, organize the report. This included assistance with handling duplicate sentiment dictionary entries, and formatting references.
+
+### AI Tool Reference
+
+OpenAI. (2026). *ChatGPT* [Large language model]. https://chatgpt.com/
+
+### R Package References
+
+The package references below are generated from the installed versions used for this report.
+
+```{r}
+#| echo: false
+#| results: asis
+
+# Print readable references without console prefixes or BibTeX entries.
+for (pkg in c("tidytext", "janeaustenr", "textdata", "syuzhet")) {
+  references <- format(citation(pkg), style = "text")
+  for (reference in references) {
+    reference <- gsub("[\r\n]+", " ", reference)
+    cat("- ", reference, "\n\n", sep = "")
+  }
+}
+```
+
+## Reproducibility
+
+NRC and AFINN may require an initial interactive download through `tidytext::get_sentiments()` in the R Console before rendering on another computer. The session details below record the R and package versions used.
+
+<details>
+<summary>View R session and package versions</summary>
+
+```{r}
+#| echo: false
+sessionInfo()
+```
+
+</details>
